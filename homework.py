@@ -29,14 +29,17 @@ HOMEWORK_STATUSES = {
 def send_message(bot, message):
     """Отправляет сообщение в Telegram чат."""
     try:
-        logging.info(f'Начало отправки {message}')
+        logging.info('Начало отправки')
         bot.send_message(
             chat_id=TELEGRAM_CHAT_ID,
             text=message,
         )
     except Exception as error:
-        logging.error(
-            f'Сообщение в Telegram не отправлено: {error}')
+        raise exceptions.TelegramError(
+            f'Не удалось отправить сообщение {error}')
+    else:
+        logging.info(f'Сообщение отправлено {message}')
+    
 
 
 def get_api_answer(current_timestamp):
@@ -46,7 +49,7 @@ def get_api_answer(current_timestamp):
     try:
         response = requests.get(ENDPOINT, headers=HEADERS, params=params)
     except Exception as error:
-        logging.error(
+        raise exceptions.WrongResponseCode(
             f'Сообщение с API в Telegram не отправлено: {error}')
     if response.status_code != HTTPStatus.OK:
         raise exceptions.StatusCodeError('API возвращает код, отличный от 200')
@@ -60,18 +63,19 @@ def check_response(response: dict) -> list:
         homeworkss = response['homeworks']  # Список домашних работ
     except KeyError as key_error:
         logging.error(f'Ключ словаря не найден: {key_error}')
-    if type(homeworkss) != list:
-        raise TypeError
+    if not isinstance(homeworkss, list):
+        raise TypeError('Ответ API не является dict')
     return homeworkss
 
 
 def parse_status(homework: dict) -> str:
     """Извлечение из ответа названия и статуса задания."""
-    try:
-        homework_name = homework.get('homework_name')
-        homework_status = homework.get('status')
-    except KeyError as key_error:
-        logging.error(f'Ключ словаря не найден: {key_error}')
+    if 'homework_name' not in homework:
+        raise KeyError('В ответе отсутсвует ключ homework_name')
+    homework_name = homework.get('homework_name')
+    homework_status = homework.get('status')
+    if homework_status not in HOMEWORK_STATUSES:
+        raise ValueError(f'Неизвестный статус работы - {homework_status}')
     verdict = HOMEWORK_STATUSES[homework_status]
     return f'Изменился статус проверки работы "{homework_name}". {verdict}'
 
@@ -84,38 +88,38 @@ def check_tokens():
 def main():
     """Основная логика работы бота."""
     if not check_tokens():
-        exit()
+        message = 'Отсутствует токен. Бот остановлен!'
+        logging.critical(message)
+        exit(message)
     bot = telegram.Bot(token=TELEGRAM_TOKEN)
-    current_timestamp = int(time.time())  # Текущее время с начала эпохи Unix
-    homework_status = None
+    current_timestamp = int(time.time())
+    start_message = 'Бот начал работу'
+    send_message(bot, start_message)
+    logging.info(start_message)
+    empty = ''
 
     while True:
         try:
             response = get_api_answer(current_timestamp)
-            homeworkss = check_response(response)
-            homework = homeworkss[0]
-            new_homework_status = homework.get('status')
-            if new_homework_status == homework_status:
-                logging.debug('Статус не изменился')
+            current_timestamp = response.get(int(time.time()))
+            homeworks = check_response(response)
+            if homeworks:
+                message = parse_status(homeworks[0])
             else:
-                homework_status = new_homework_status
-                message = parse_status(homework)
+                message = 'Нет новых статусов'
+            if message != empty:
                 send_message(bot, message)
-            # time.sleep(RETRY_TIME)
+                empty = message
+            else:
+                logging.info(message)
+                
         except Exception as error:
             message = f'Сбой в работе программы: {error}'
             logging.error(message)
-            # time.sleep(RETRY_TIME)
+            
         finally:
             time.sleep(RETRY_TIME)
 
 
 if __name__ == '__main__':
-    logging.basicConfig(
-        level=logging.INFO,
-        handlers=[
-            logging.FileHandler(
-                os.path.abspath('main.log'), encoding='UTF-8')],
-        format='%(asctime)s, %(levelname)s, %(name)s, %(message)s'
-    )
     main()
